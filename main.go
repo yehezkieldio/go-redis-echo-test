@@ -86,9 +86,22 @@ func main() {
 		return c.JSON(http.StatusOK, users)
 	})
 
+	e.GET("/user/:username", func(c echo.Context) error {
+		username := c.Param("username")
+
+		key := "user:" + username
+
+		user, err := rdb.Get(ctx, key).Result()
+		if err == goredislib.Nil {
+			return c.String(http.StatusNotFound, "User not found")
+		}
+
+		return c.JSON(http.StatusOK, user)
+	})
+
 	e.POST("/user", func(c echo.Context) error {
 		logger.Info().Msg("Aquiring lock for user creation")
-		mutex := rs.NewMutex("create_user")
+		mutex := rs.NewMutex("create_user_" + c.Param("username"))
 		if err := mutex.Lock(); err != nil {
 			logger.Error().Msg(err.Error())
 			return c.String(http.StatusInternalServerError, err.Error())
@@ -113,6 +126,65 @@ func main() {
 		}
 
 		return c.String(http.StatusCreated, "User created")
+	})
+
+	e.PUT("/user/:username", func(c echo.Context) error {
+		logger.Info().Msg("Aquiring lock for user update")
+		mutex := rs.NewMutex("update_user_" + c.Param("username"))
+		if err := mutex.Lock(); err != nil {
+			logger.Error().Msg(err.Error())
+			return c.String(http.StatusInternalServerError, err.Error())
+		}
+		defer mutex.Unlock()
+		logger.Info().Msg("Released lock for user update")
+
+		username := c.Param("username")
+
+		key := "user:" + username
+
+		_, err := rdb.Get(ctx, key).Result()
+		if err == goredislib.Nil {
+			return c.String(http.StatusNotFound, "User not found")
+		}
+
+		req := new(CreateUserRequest)
+		if err := c.Bind(req); err != nil {
+			return c.String(http.StatusBadRequest, err.Error())
+		}
+
+		_, err = rdb.Set(ctx, key, req.Username, 0).Result()
+		if err != nil {
+			return c.String(http.StatusInternalServerError, err.Error())
+		}
+
+		return c.String(http.StatusOK, "User updated")
+	})
+
+	e.DELETE("/user/:username", func(c echo.Context) error {
+		logger.Info().Msg("Aquiring lock for user deletion")
+		mutex := rs.NewMutex("delete_user_" + c.Param("username"))
+		if err := mutex.Lock(); err != nil {
+			logger.Error().Msg(err.Error())
+			return c.String(http.StatusInternalServerError, err.Error())
+		}
+		defer mutex.Unlock()
+		logger.Info().Msg("Released lock for user deletion")
+
+		username := c.Param("username")
+
+		key := "user:" + username
+
+		_, err := rdb.Get(ctx, key).Result()
+		if err == goredislib.Nil {
+			return c.String(http.StatusNotFound, "User not found")
+		}
+
+		_, err = rdb.Del(ctx, key).Result()
+		if err != nil {
+			return c.String(http.StatusInternalServerError, err.Error())
+		}
+
+		return c.String(http.StatusOK, "User deleted")
 	})
 
 	e.HideBanner = true
