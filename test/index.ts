@@ -7,15 +7,15 @@ export const generateRandomName = () => {
     return result;
 };
 
-for (let i = 0; i < 500000; i++) {
+for (let i = 0; i < 100000; i++) {
     const name = generateRandomName();
 
-    const response = await fetch("http://localhost:3000/user", {
+    const response = await fetch("http://localhost/user", {
         method: "POST",
         body: JSON.stringify({ username: name }),
         headers: { "Content-Type": "application/json" },
     });
 
     const body = await response.text();
-    console.log(body);
+    console.log(`${body} - ${name}`);
 }

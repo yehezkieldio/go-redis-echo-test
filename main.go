@@ -10,20 +10,23 @@ import (
 	"github.com/go-redsync/redsync/v4/redis/goredis/v9"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+
 	goredislib "github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
+	"golang.org/x/sync/singleflight"
 )
 
 var (
-	ctx    = context.Background()
-	logger zerolog.Logger
-	rdb    *goredislib.Client
-	rs     *redsync.Redsync
+	ctx     = context.Background()
+	logger  zerolog.Logger
+	rdb     *goredislib.Client
+	rs      *redsync.Redsync
+	sfGroup singleflight.Group
 )
 
 func initRedis() {
 	rdb = goredislib.NewClient(&goredislib.Options{
-		Addr:     "localhost:6379",
+		Addr:     "dragonfly:6379",
 		Password: "",
 		DB:       0,
 	})
@@ -57,7 +60,13 @@ func main() {
 	initLogger()
 	initRedis()
 
+	// port := flag.Int("port", 3000, "Port to run the server on")
+	// flag.Parse()
+
+	port := os.Getenv("PORT")
+
 	e := echo.New()
+	e.Use(middleware.Gzip())
 	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
 		LogURI:     true,
 		LogStatus:  true,
@@ -78,7 +87,9 @@ func main() {
 	})
 
 	e.GET("/user", func(c echo.Context) error {
-		users, err := rdb.Keys(ctx, "user:*").Result()
+		users, err, _ := sfGroup.Do("users", func() (interface{}, error) {
+			return rdb.Keys(ctx, "user:*").Result()
+		})
 		if err != nil {
 			return c.String(http.StatusInternalServerError, err.Error())
 		}
@@ -88,11 +99,16 @@ func main() {
 
 	e.GET("/user/:username", func(c echo.Context) error {
 		username := c.Param("username")
-
 		key := "user:" + username
 
-		user, err := rdb.Get(ctx, key).Result()
-		if err == goredislib.Nil {
+		user, err, _ := sfGroup.Do(key, func() (interface{}, error) {
+			return rdb.Get(ctx, key).Result()
+		})
+		if err != nil {
+			return c.String(http.StatusInternalServerError, err.Error())
+		}
+
+		if user == nil {
 			return c.String(http.StatusNotFound, "User not found")
 		}
 
@@ -115,12 +131,18 @@ func main() {
 		}
 
 		key := "user:" + req.Username
-		_, err := rdb.Get(ctx, key).Result()
-		if err != goredislib.Nil {
+		exists, err := rdb.Exists(ctx, key).Result()
+		if err != nil {
+			return c.String(http.StatusInternalServerError, err.Error())
+		}
+		if exists > 0 {
 			return c.String(http.StatusConflict, "User already exists")
 		}
 
-		_, err = rdb.Set(ctx, key, req.Username, 0).Result()
+		_, err = rdb.TxPipelined(ctx, func(pipe goredislib.Pipeliner) error {
+			pipe.Set(ctx, key, req.Username, 2*time.Minute)
+			return nil
+		})
 		if err != nil {
 			return c.String(http.StatusInternalServerError, err.Error())
 		}
@@ -189,5 +211,6 @@ func main() {
 
 	e.HideBanner = true
 
-	logger.Fatal().Msg(e.Start(":3000").Error())
+	logger.Fatal().Msg(e.Start(":" + port).Error())
+
 }
